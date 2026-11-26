@@ -77,32 +77,40 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     welcome_text = (
         f"👋 **Hi {user_name}! Welcome to your AI Business Card Directory.**\n\n"
         "📸 **How to use:**\n"
-        "Just snap a photo of any business card and send it to me.\n"
-        "Gemini AI will read all contact details, check for duplicates, save it to your private directory, "
-        "and send you a 1-tap contact card (`.vcf`) for your phone!\n\n"
-        "🗂️ **Quick Actions:**\n"
-        "Use the menu buttons below or click the `[/] Menu` button anytime.\n\n"
-        "🔒 *Your data is private to your Telegram account.*"
+        "• **Scan a card:** Just send a photo of any business card\n"
+        "• **Search:** Send any name or company, or type `/search <name>`\n"
+        "• **View list:** Tap **🗂️ View Contacts** or type `/contacts`\n"
+        "• **Export:** Tap **📊 Export CSV** or type `/export`\n\n"
+        "👇 Tap any button below to get started!"
     )
     await update.message.reply_markdown(welcome_text, reply_markup=MAIN_MENU_KEYBOARD)
 
 async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Opens the interactive main menu."""
+    """Opens the interactive main menu with guidance."""
     menu_text = (
         "🗂️ **Business Card Directory Menu**\n\n"
-        "Choose an action from the keyboard below, or send a photo of any business card to scan:"
+        "• 📸 **Scan a Card:** Snap & send any card photo\n"
+        "• 🔍 **Search:** Type `/search <query>` or just send any name/company\n"
+        "• 🗂️ **List:** View all saved contacts with page flipping\n"
+        "• 📊 **Export:** Download all contacts as a CSV spreadsheet\n"
+        "• 🤖 **AI Model:** Check the active Gemini model (`/model`)\n\n"
+        "Tap a button below to begin:"
     )
     await update.message.reply_markdown(menu_text, reply_markup=MAIN_MENU_KEYBOARD)
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     help_text = (
-        "💡 **Card Scanner Bot Help**\n\n"
-        "1. **Scan a card:** Take or upload a clear photo of any business card.\n"
-        "2. **Duplicate Detection:** If a contact already exists (matching email, phone, or name), you can update it or save as new.\n"
-        "3. **1-Tap Save:** The bot replies with a `.vcf` file you can tap to add to Apple or Google Contacts.\n"
-        "4. **Search:** Tap '🔍 Search Contact' or type `/search <name or company>`.\n"
-        "5. **Export:** Tap '📊 Export CSV' or type `/export` to download a spreadsheet.\n"
-        "6. **Delete:** Click the '🗑️ Delete' button on any card message or use `/delete <id>`."
+        "💡 **How to Use This Bot:**\n\n"
+        "1. **📸 Scan a Business Card:**\n"
+        "   Take or send a photo of any business card. Gemini AI will extract all details and give you a 1-tap `.vcf` file to save to your phone.\n\n"
+        "2. **🔍 Search Contacts:**\n"
+        "   Tap **🔍 Search Contact** or simply type any name, company, or email in chat (e.g. `John` or `Google`).\n\n"
+        "3. **🗂️ View Contacts:**\n"
+        "   Tap **🗂️ View Contacts** to browse your saved cards (5 per page with Next/Prev buttons).\n\n"
+        "4. **📊 Export CSV:**\n"
+        "   Tap **📊 Export CSV** to download your full directory as a spreadsheet.\n\n"
+        "5. **⚠️ Duplicate Detection:**\n"
+        "   If you scan an existing card, the bot lets you update it or save as new."
     )
     await update.message.reply_markdown(help_text, reply_markup=MAIN_MENU_KEYBOARD)
 
@@ -202,23 +210,71 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Please ensure the image is clear and well-lit."
         )
 
+async def execute_search(update: Update, user_id: int, query: str):
+    """Executes search and renders results with 1-tap vCard buttons."""
+    clean_query = query.strip()
+    if clean_query.lower().startswith("search "):
+        clean_query = clean_query[7:].strip()
+    elif clean_query.lower().startswith("find "):
+        clean_query = clean_query[5:].strip()
+
+    if not clean_query:
+        await update.message.reply_markdown("🔍 Please provide a search term. Example: `John` or `Google`")
+        return
+
+    results = search_contacts(user_id, clean_query)
+    if not results:
+        no_match_text = (
+            f"🔍 No contacts found matching **\"{clean_query}\"**.\n\n"
+            "💡 **Suggestions:**\n"
+            "• Try searching by company, first name, or email\n"
+            "• Tap **🗂️ View Contacts** to browse all entries\n"
+            "• Send a photo of any business card to save a new contact"
+        )
+        await update.message.reply_markdown(no_match_text)
+        return
+
+    text = f"🔍 **Search results for \"{clean_query}\" ({len(results)} found):**\n\n"
+    buttons = []
+    for c in results:
+        company_tag = f" ({c['company']})" if c['company'] else ""
+        title_tag = f" - {c['job_title']}" if c['job_title'] else ""
+        phones = f"\n   📞 {c['phones']}" if c['phones'] else ""
+        emails = f" | ✉️ {c['emails']}" if c['emails'] else ""
+        text += f"• **{c['full_name']}**{company_tag}{title_tag}{phones}{emails}\n\n"
+        buttons.append([InlineKeyboardButton(f"📲 Get vCard for {c['full_name']}", callback_data=f"vcf_{c['id']}")])
+
+    keyboard = InlineKeyboardMarkup(buttons) if buttons else None
+    await update.message.reply_markdown(text, reply_markup=keyboard)
+
 async def handle_menu_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handles taps on the interactive reply keyboard buttons."""
-    text = update.message.text
+    """Handles taps on keyboard buttons as well as direct search queries."""
+    text = update.message.text.strip()
+    user_id = update.effective_user.id
+
     if text == "🗂️ View Contacts":
+        context.user_data["waiting_for_search"] = False
         await contacts_command(update, context)
     elif text == "🔍 Search Contact":
+        context.user_data["waiting_for_search"] = True
         await update.message.reply_markdown(
-            "🔍 **Search Directory**\n\n"
-            "To search, type `/search <name or company>`\n"
-            "*Example:* `/search Google` or `/search John`"
+            "🔍 **Search Mode Active**\n\n"
+            "Just type the **name, company, or email** you are looking for:\n"
+            "*(For example: `Alex`, `Microsoft`, or `ceo`)*"
         )
     elif text == "📊 Export CSV":
+        context.user_data["waiting_for_search"] = False
         await export_command(update, context)
     elif text == "🤖 AI Model":
+        context.user_data["waiting_for_search"] = False
         await model_command(update, context)
     elif text == "❓ Help":
+        context.user_data["waiting_for_search"] = False
         await help_command(update, context)
+    else:
+        # User typed plain text: execute search directly!
+        context.user_data["waiting_for_search"] = False
+        await execute_search(update, user_id, text)
 
 PAGE_SIZE = 5
 
@@ -267,27 +323,19 @@ async def contacts_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_markdown(text, reply_markup=keyboard)
 
 async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Search user's contacts."""
+    """Search user's contacts via /search command."""
     user_id = update.effective_user.id
     if not context.args:
-        await update.message.reply_text("Usage: `/search <name or company>`\nExample: `/search John`")
+        context.user_data["waiting_for_search"] = True
+        await update.message.reply_markdown(
+            "🔍 **Search Directory**\n\n"
+            "Send the name, company, or email you want to search:\n"
+            "*(Example: `John` or `Google`)*"
+        )
         return
 
     query = " ".join(context.args)
-    results = search_contacts(user_id, query)
-
-    if not results:
-        await update.message.reply_text(f"🔍 No contacts found matching '{query}'.")
-        return
-
-    text = f"🔍 **Search results for '{query}' ({len(results)} found):**\n\n"
-    for c in results:
-        text += (
-            f"👤 **{c['full_name']}** [#{c['id']}]\n"
-            f"🏢 {c['company'] or 'N/A'} | 💼 {c['job_title'] or 'N/A'}\n"
-            f"📞 {c['phones'] or 'N/A'} | ✉️ {c['emails'] or 'N/A'}\n\n"
-        )
-    await update.message.reply_markdown(text)
+    await execute_search(update, user_id, query)
 
 async def export_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Exports user's contacts into a downloadable CSV spreadsheet."""
@@ -383,6 +431,15 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         target_page = int(data.split("_")[1])
         text, keyboard = render_contacts_view(user_id, page=target_page)
         await query.edit_message_text(text, reply_markup=keyboard, parse_mode="Markdown")
+
+    elif data.startswith("vcf_"):
+        contact_id = int(data.split("_")[1])
+        contact = get_contact_by_id(user_id, contact_id)
+        if contact:
+            await send_vcf_card(query.message.chat, contact)
+            await query.answer("📲 vCard sent!")
+        else:
+            await query.answer("⚠️ Contact not found.")
 
     elif data == "noop":
         pass
